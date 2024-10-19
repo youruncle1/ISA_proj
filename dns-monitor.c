@@ -80,7 +80,7 @@ int main(int argc, char *argv[]) {
 
     // Signal stop
     if (stop) {
-        fprintf(stderr, "Signal %d received, exiting...\n", stop);
+        fprintf(stderr, "Signal SIGINT/SIGTERM/SIGQUIT received, exiting...\n");
     }
 
     // Close the handle
