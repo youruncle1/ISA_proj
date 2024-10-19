@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE
-LDFLAGS = -lpcap
+LDFLAGS = -lpcap -lresolv
 
 TARGET = dns-monitor
 SOURCES = dns-monitor.c argparse.c pcapinit.c dns_utils.c

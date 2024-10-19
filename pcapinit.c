@@ -8,39 +8,84 @@
 #include <netinet/udp.h>
 #include <arpa/inet.h>
 #include "pcapinit.h"
+#include <arpa/nameser.h>
+#include <stdlib.h>
+#include <resolv.h>
+#include <errno.h>
 #include "dns_utils.h"
 
+#define SIZE_ETHERNET 14       // Ethernet header size
+#define SIZE_LINUX_SLL 16      // Linux cooked header size
+#define SIZE_NULL_LOOPBACK 4   // Null/Loopback header size
 
-#define SIZE_ETHERNET 14
 
 int linktype = 0;
+
+const char *rr_class_to_string(uint16_t rr_class) {
+    switch (rr_class) {
+        case ns_c_in:
+            return "IN";
+        case ns_c_chaos:
+            return "CH";
+        case ns_c_hs:
+            return "HS";
+        case ns_c_none:
+            return "NONE";
+        case ns_c_any:
+            return "ANY";
+        default:
+            return NULL; 
+    }
+}
+
+const char *rr_type_to_string(uint16_t rr_type) {
+    switch (rr_type) {
+        case ns_t_a:
+            return "A";
+        case ns_t_aaaa:
+            return "AAAA";
+        case ns_t_ns:
+            return "NS";
+        case ns_t_mx:
+            return "MX";
+        case ns_t_soa:
+            return "SOA";
+        case ns_t_cname:
+            return "CNAME";
+        case ns_t_srv:
+            return "SRV";
+        case ns_t_ptr:
+            return "PTR";
+        case ns_t_any: 
+            return "ANY";
+        default:
+            return NULL;
+    }
+}
+
 
 pcap_t *initialize_pcap(Arguments *args) {
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t *handle = NULL;
 
     if (args->interface) {
-        /* Otevření síťového rozhraní pro zachytávání 
-        BUFSIZ 512bit, podla knihy od matouska 3.4 */
+        // BUFSIZ 512bit, from book by matouska, 3.4
         handle = pcap_open_live(args->interface, BUFSIZ, 1, 1000, errbuf);
         if (!handle) {
-            fprintf(stderr, "Error: Could not open device %s: %s\n", args->interface, errbuf);
+            fprintf(stderr, "Error opening device %s: %s\n", args->interface, errbuf);
             return NULL;
         }
-    } else if (args->pcap_file) {
-        /* Načtení PCAP souboru */
+    } 
+    else if (args->pcap_file) {
+        // Open the PCAP file
         handle = pcap_open_offline(args->pcap_file, errbuf);
         if (!handle) {
-            fprintf(stderr, "Error: Could not open file %s: %s\n", args->pcap_file, errbuf);
+            fprintf(stderr, "Error opening file %s: %s\n", args->pcap_file, errbuf);
             return NULL;
         }
-    } else {
-        /* Toto by nemělo nastat, protože argumenty jsou kontrolovány dříve */
-        fprintf(stderr, "Error: No interface or PCAP file specified.\n");
-        return NULL;
     }
 
-    /* Zjištění linkového typu */
+    // Get the datalink type (LinkType
     linktype = pcap_datalink(handle);
 
     return handle;
@@ -51,496 +96,499 @@ void packet_handler(u_char *args_ptr, const struct pcap_pkthdr *header, const u_
     const u_char *ip_packet;
     int ip_header_length;
     uint8_t ip_version;
-    const struct ip *ip_hdr;
-    const struct ip6_hdr *ip6_hdr;
-    const struct udphdr *udp_hdr;
+    const struct ip *ip_hdr = NULL;
+    const struct ip6_hdr *ip6_hdr = NULL;
+    const struct udphdr *udp_hdr = NULL;
     const u_char *dns_payload;
     int dns_payload_length;
+    int link_header_length = 0;
 
-    /* Posun na začátek IP hlavičky podle linkového typu */
-    if (linktype == DLT_EN10MB) {
-        /* Ethernetová hlavička je přítomna */
-        ip_packet = packet + SIZE_ETHERNET;
-    } else if (linktype == DLT_RAW) {
-        /* Ethernetová hlavička není přítomna */
-        ip_packet = packet;
-    } else {
-        fprintf(stderr, "Unsupported link type: %d\n", linktype);
+    // Set ip_packet based on linktype
+    switch (linktype) {
+        case DLT_EN10MB: { // Ethernet
+            link_header_length = SIZE_ETHERNET;
+            ip_packet = packet + link_header_length;
+            break;
+        }
+        case DLT_LINUX_SLL: { // Linux cooked capture
+            link_header_length = SIZE_LINUX_SLL;
+            ip_packet = packet + link_header_length;
+            break;
+        }
+        case DLT_NULL: // BSD loopback encapsulation
+        case DLT_LOOP: { // OpenBSD loopback encapsulation
+            link_header_length = SIZE_NULL_LOOPBACK;
+            ip_packet = packet + link_header_length;
+            break;
+        }
+        case DLT_RAW: { // Raw IP packet
+            ip_packet = packet;
+            break;
+        }
+        default: {
+            // Unsupported link type
+            fprintf(stderr, "Unsupported link type: %d\n", linktype);
+            return;
+        }
+    }
+
+    // Check if there is enough data for an IP header
+    if (header->caplen < (bpf_u_int32)(link_header_length + 20)) { // 20 bytes for minimum IP header size
+        fprintf(stderr, "Packet too short for IP header.\n");
         return;
     }
 
-    /* Zjištění verze IP protokolu */
-    ip_version = (ip_packet[0] & 0xF0) >> 4;
-
+    // Get IP version
+    ip_version = ip_packet[0] >> 4;
     if (ip_version == 4) {
-        /* Zpracování IPv4 hlavičky */
         ip_hdr = (struct ip *)ip_packet;
         ip_header_length = ip_hdr->ip_hl * 4;
 
-        /* Kontrola, zda je protokol UDP */
+        // Ensure there is enough data for the full IPv4 header
+        if (header->caplen < (bpf_u_int32)(link_header_length + ip_header_length)) {
+            fprintf(stderr, "Packet too short for IPv4 header.\n");
+            return;
+        }
+
+        // Check for UDP (should always be UDP, just in case...)
         if (ip_hdr->ip_p != IPPROTO_UDP) {
-            fprintf(stderr, "Non-UDP packet, skipping...\n");
+            return; 
+        }
+
+        udp_hdr = (struct udphdr *)(ip_packet + ip_header_length);
+
+        // Ceheck if there is enough data for UDP header
+        if (header->caplen < link_header_length + ip_header_length + sizeof(struct udphdr)) {
+            fprintf(stderr, "Packet too short for UDP header.\n");
             return;
         }
 
-        /* Zpracování UDP hlavičky */
-        udp_hdr = (struct udphdr *)(ip_packet + ip_header_length);
-
-        /* Získání DNS payloadu */
-        dns_payload = (u_char *)(ip_packet + ip_header_length + sizeof(struct udphdr));
+        // Calculate DNS payload
+        dns_payload = ip_packet + ip_header_length + sizeof(struct udphdr);
         dns_payload_length = ntohs(udp_hdr->uh_ulen) - sizeof(struct udphdr);
 
-        /* Volání funkce pro parsování DNS zprávy */
-        parse_dns_packet(dns_payload, dns_payload_length, args, ip_hdr, NULL, udp_hdr, header);
+        // Check if there is enough data for DNS payload
+        if (header->caplen < link_header_length + ip_header_length + sizeof(struct udphdr) + dns_payload_length) {
+            fprintf(stderr, "Packet too short for DNS payload.\n");
+            return;
+        }
+
     } else if (ip_version == 6) {
-        /* Zpracování IPv6 hlavičky */
         ip6_hdr = (struct ip6_hdr *)ip_packet;
-        ip_header_length = sizeof(struct ip6_hdr);
+        ip_header_length = 40; // IPv6 header is fixed at 40 bytes
 
-        /* Zpracování rozšíření hlaviček IPv6 může být složité, pro jednoduchost předpokládáme, že následuje přímo UDP */
-        if (ip6_hdr->ip6_nxt != IPPROTO_UDP) {
-            fprintf(stderr, "Non-UDP packet, skipping...\n");
+        // Ensure there is enough data for the full IPv6 header
+        if (header->caplen < (bpf_u_int32)(link_header_length + ip_header_length)) {
+            fprintf(stderr, "Packet too short for IPv6 header.\n");
             return;
         }
 
-        /* Zpracování UDP hlavičky */
+        // Check if the next header is UDP
+        if (ip6_hdr->ip6_nxt != IPPROTO_UDP) {
+            return; // Not UDP
+        }
+
         udp_hdr = (struct udphdr *)(ip_packet + ip_header_length);
 
-        /* Získání DNS payloadu */
-        dns_payload = (u_char *)(ip_packet + ip_header_length + sizeof(struct udphdr));
+        // Ensure there is enough data for UDP header
+        if (header->caplen < link_header_length + ip_header_length + sizeof(struct udphdr)) {
+            fprintf(stderr, "Packet too short for UDP header.\n");
+            return;
+        }
+
+        // Calculate DNS payload
+        dns_payload = ip_packet + ip_header_length + sizeof(struct udphdr);
         dns_payload_length = ntohs(udp_hdr->uh_ulen) - sizeof(struct udphdr);
 
-        /* Volání funkce pro parsování DNS zprávy */
-        parse_dns_packet(dns_payload, dns_payload_length, args, NULL, ip6_hdr, udp_hdr, header);
+        // Ensure there is enough data for DNS payload
+        if (header->caplen < link_header_length + ip_header_length + sizeof(struct udphdr) + dns_payload_length) {
+            fprintf(stderr, "Packet too short for DNS payload.\n");
+            return;
+        }
+
     } else {
+        // Unknown IP version
         fprintf(stderr, "Unknown IP version: %d\n", ip_version);
         return;
     }
+
+    // Process the DNS payload
+    parse_dns_packet(dns_payload, dns_payload_length, args, ip_hdr, ip6_hdr, udp_hdr, header);
 }
+
 
 void parse_dns_packet(const u_char *dns_payload, int dns_payload_length, Arguments *args,
                       const struct ip *ip_hdr, const struct ip6_hdr *ip6_hdr,
                       const struct udphdr *udp_hdr, const struct pcap_pkthdr *header) {
-    /* Kontrola délky DNS payloadu */
+    // Check if DNS payload length is valid
     if (dns_payload_length <= 0) {
         fprintf(stderr, "Invalid DNS payload length\n");
         return;
     }
 
-    /* Parsování DNS hlavičky */
-    /* DNS hlavička má pevnou délku 12 bajtů */
-    if (dns_payload_length < 12) {
-        fprintf(stderr, "DNS payload too short for header\n");
+    // Initialize parsing handle
+    ns_msg handle;
+    if (ns_initparse(dns_payload, dns_payload_length, &handle) < 0) {
+        fprintf(stderr, "Error initializing DNS parsing: %s\n", strerror(errno));
         return;
     }
 
-    /* Struktura DNS hlavičky */
-    struct dns_header {
-        uint16_t id;
-        uint16_t flags;
-        uint16_t qdcount;
-        uint16_t ancount;
-        uint16_t nscount;
-        uint16_t arcount;
-    };
+    // Extract DNS header information
+    uint16_t id = ns_msg_id(handle);
 
-    const struct dns_header *dns_hdr = (const struct dns_header *)dns_payload;
+    // Extract flags
+    int qr = ns_msg_getflag(handle, ns_f_qr);
+    int opcode = ns_msg_getflag(handle, ns_f_opcode);
+    int aa = ns_msg_getflag(handle, ns_f_aa);
+    int tc = ns_msg_getflag(handle, ns_f_tc);
+    int rd = ns_msg_getflag(handle, ns_f_rd);
+    int ra = ns_msg_getflag(handle, ns_f_ra);
+    int ad = ns_msg_getflag(handle, ns_f_ad);
+    int cd = ns_msg_getflag(handle, ns_f_cd);
+    int rcode = ns_msg_getflag(handle, ns_f_rcode);
 
-    /* Převod hodnot z síťového na hostitelský pořádek bajtů */
-    uint16_t id = ntohs(dns_hdr->id);
-    uint16_t flags = ntohs(dns_hdr->flags);
-    uint16_t qdcount = ntohs(dns_hdr->qdcount);
-    uint16_t ancount = ntohs(dns_hdr->ancount);
-    uint16_t nscount = ntohs(dns_hdr->nscount);
-    uint16_t arcount = ntohs(dns_hdr->arcount);
+    // Get counts from the DNS header
+    int qdcount = ns_msg_count(handle, ns_s_qd);
+    int ancount = ns_msg_count(handle, ns_s_an);
+    int nscount = ns_msg_count(handle, ns_s_ns);
+    int arcount = ns_msg_count(handle, ns_s_ar);
 
-    /* Převod timestampu na požadovaný formát */
+    // Timestamp extraction and converting it
     char timestamp_str[20];
-    struct tm *ltime;
-    time_t local_tv_sec = header->ts.tv_sec;
-    ltime = localtime(&local_tv_sec);
-    strftime(timestamp_str, sizeof timestamp_str, "%Y-%m-%d %H:%M:%S", ltime);
+    struct tm ltime;
+    //localtime_r(&header->ts.tv_sec, &ltime);
+    gmtime_r(&header->ts.tv_sec, &ltime);
+    strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", &ltime);
 
 
     char src_ip[INET6_ADDRSTRLEN];
     char dst_ip[INET6_ADDRSTRLEN];
 
+    // Convert the IPvX to string and store to src/dst
     if (ip_hdr) {
-        /* IPv4 */
         inet_ntop(AF_INET, &(ip_hdr->ip_src), src_ip, INET_ADDRSTRLEN);
         inet_ntop(AF_INET, &(ip_hdr->ip_dst), dst_ip, INET_ADDRSTRLEN);
-    } else if (ip6_hdr) {
-        /* IPv6 */
+    } 
+    else if (ip6_hdr) {
         inet_ntop(AF_INET6, &(ip6_hdr->ip6_src), src_ip, INET6_ADDRSTRLEN);
         inet_ntop(AF_INET6, &(ip6_hdr->ip6_dst), dst_ip, INET6_ADDRSTRLEN);
-    } else {
-        fprintf(stderr, "Neither IPv4 nor IPv6 header is available\n");
+    } 
+    else {
+        // Should not happen but just in case
+        fprintf(stderr, "Neither IPv4 or IPv6 header is available\n");
         return;
     }
 
-    /* Kontrola, zda je povolen verbose režim */
-
-
-    /* Extrakce příznaků */
-    int qr = (flags & 0x8000) >> 15;
-    int opcode = (flags & 0x7800) >> 11;
-    int aa = (flags & 0x0400) >> 10;
-    int tc = (flags & 0x0200) >> 9;
-    int rd = (flags & 0x0100) >> 8;
-    int ra = (flags & 0x0080) >> 7;
-    //int z = (flags & 0x0040) >> 6; /* Rezervovaný bit */
-    int ad = (flags & 0x0020) >> 5;
-    int cd = (flags & 0x0010) >> 4;
-    int rcode = flags & 0x000F;
-
-    // printf("Flags: QR=%d, OPCODE=%d, AA=%d, TC=%d, RD=%d, RA=%d, AD=%d, CD=%d, RCODE=%d\n",
-    //     qr, opcode, aa, tc, rd, ra, ad, cd, rcode);
-    
-        if (args->verbose) {
-        /* Verbose output */
+    // Final Output (Header info)
+    if (args->verbose) {
         printf("Timestamp: %s\n", timestamp_str);
         printf("SrcIP: %s\n", src_ip);
         printf("DstIP: %s\n", dst_ip);
         printf("SrcPort: UDP/%d\n", ntohs(udp_hdr->uh_sport));
         printf("DstPort: UDP/%d\n", ntohs(udp_hdr->uh_dport));
         printf("Identifier: 0x%X\n", id);
-        printf("Flags: QR=%d, OPCODE=%d, AA=%d, TC=%d, RD=%d, RA=%d, AD=%d, CD=%d, RCODE=%d\n",
-               qr, opcode, aa, tc, rd, ra, ad, cd, rcode);
+        printf("Flags: QR=%d, OPCODE=%d, AA=%d, TC=%d, RD=%d, RA=%d, AD=%d, CD=%d, RCODE=%d\n", qr, opcode, aa, tc, rd, ra, ad, cd, rcode);
+        printf("\n"); 
+    } 
+    else {
+        char qr_char = (qr == 0) ? 'Q' : 'R'; 
+        printf("%s %s -> %s (%c %d/%d/%d/%d)\n", timestamp_str, src_ip, dst_ip, qr_char, qdcount, ancount, nscount, arcount);
+    }
 
-        /* Empty line */
-        printf("\n");
-
-        /* Pointer to current position in DNS message */
-        const u_char *ptr = dns_payload + 12; /* DNS header is 12 bytes */
-        int remaining_length = dns_payload_length - 12;
-
-        /* Parse Question Section */
-        if (qdcount > 0) {
+    // Parse Question Section
+    if (qdcount > 0) {
+        if (args->verbose) {
             printf("[Question Section]\n");
         }
+
         for (int i = 0; i < qdcount; i++) {
-            char domain_name[256];
-            int name_length = dns_extract_name(dns_payload, dns_payload_length, ptr, domain_name, sizeof(domain_name));
-            if (name_length == -1) {
-                fprintf(stderr, "Error parsing domain name in Question Section\n");
+            ns_rr rr;
+            if (ns_parserr(&handle, ns_s_qd, i, &rr) < 0) {
+                fprintf(stderr, "Error parsing question section\n");
                 return;
             }
-            ptr += name_length;
-            remaining_length -= name_length;
+            // TODO: maybe change to dn_expand???
+            const char *domain_name = ns_rr_name(rr); // first occurence of domain name, should be uncompresssed anyways
+            uint16_t qtype = ns_rr_type(rr);
+            uint16_t qclass = ns_rr_class(rr);
 
-            if (remaining_length < 4) {
-                fprintf(stderr, "Not enough data for Question Section\n");
-                return;
-            }
-
-            uint16_t qtype = ntohs(*(uint16_t *)ptr);
-            ptr += 2;
-            //uint16_t qclass = ntohs(*(uint16_t *)ptr);
-            ptr += 2;
-            remaining_length -= 4;
-
-            /* Map qtype to string */
-            const char *type_str;
+            // Map QTYPE to string
             char type_str_buffer[16];
-            switch (qtype) {
-                case 1:
-                    type_str = "A";
-                    break;
-                case 28:
-                    type_str = "AAAA";
-                    break;
-                case 2:
-                    type_str = "NS";
-                    break;
-                case 5:
-                    type_str = "CNAME";
-                    break;
-                case 6:
-                    type_str = "SOA";
-                    break;
-                case 15:
-                    type_str = "MX";
-                    break;
-                case 33:
-                    type_str = "SRV";
-                    break;
-                default:
-                    snprintf(type_str_buffer, sizeof(type_str_buffer), "TYPE%d", qtype);
-                    type_str = type_str_buffer;
-                    break;
+            const char *type_str = rr_type_to_string(qtype);
+            if (type_str == NULL) {
+                snprintf(type_str_buffer, sizeof(type_str_buffer), "TYPE%d", qtype);
+                type_str = type_str_buffer;
             }
 
-            /* Output question */
-            printf("%s IN %s\n", domain_name, type_str);
+            // Map QCLASS to string
+            char class_str_buffer[16];
+            const char *class_str = rr_class_to_string(qclass);
+            if (class_str == NULL) {
+                snprintf(class_str_buffer, sizeof(class_str_buffer), "CLASS%d", qclass);
+                class_str = class_str_buffer;
+            }
 
-            /* Save domain name */
-            printf("Calling save_domain_name with domain_name: %s\n", domain_name);
+
             save_domain_name(domain_name, args);
+
+            if (args->verbose) {
+                printf("%s %s %s\n", domain_name, class_str, type_str);
+            }
         }
 
-        /* Parse Resource Records */
-        parse_resource_records(&ptr, &remaining_length, ancount, dns_payload, dns_payload_length, "Answer Section", args);
-        parse_resource_records(&ptr, &remaining_length, nscount, dns_payload, dns_payload_length, "Authority Section", args);
-        parse_resource_records(&ptr, &remaining_length, arcount, dns_payload, dns_payload_length, "Additional Section", args);
+        //if (args->verbose) {
+        //    printf("\n"); 
+        //}
+    }
 
-        /* Separator */
+    // Parse Answer, Auth, Additional sections
+    parse_resource_records(&handle, ns_s_an, ancount, "Answer Section", args);
+    parse_resource_records(&handle, ns_s_ns, nscount, "Authority Section", args);
+    parse_resource_records(&handle, ns_s_ar, arcount, "Additional Section", args);
+
+    if (args->verbose) {
         printf("====================\n");
-    } else {
-        /* Simplified output */
-        char qr_char = (qr == 0) ? 'Q' : 'R';
-        printf("%s %s -> %s (%c %d/%d/%d/%d)\n",
-               timestamp_str, src_ip, dst_ip, qr_char, qdcount, ancount, nscount, arcount);
     }
 }
 
+int dns_extract_name(const u_char *dns_payload, int dns_payload_length,
+                     const u_char *ptr, char *output, int output_size) {
+    const u_char *msg = dns_payload;                
+    const u_char *eom = dns_payload + dns_payload_length; 
 
+    int len = dn_expand(msg, eom, ptr, output, output_size);
+    if (len < 0) {
+        fprintf(stderr, "Error expanding domain name using dn_expand\n");
+        return -1;
+    }
 
-int dns_extract_name(const u_char *dns_payload, int dns_payload_length, const u_char *ptr, char *output, int output_size) {
-    int total_length = 0;
-    int label_length;
-    int offset;
-    int jumped = 0;
-    //const u_char *original_ptr = ptr;
-    const u_char *end = dns_payload + dns_payload_length;
-    int output_pos = 0;
-
-    while (ptr < end && (label_length = *ptr) != 0) {
-        if ((label_length & 0xC0) == 0xC0) {
-            /* Komprimovaný název */
-            if (ptr + 1 >= end) {
-                return -1;
-            }
-            if (!jumped) {
-                total_length += 2;
-            }
-            offset = ((label_length & 0x3F) << 8) | *(ptr + 1);
-            if (offset >= dns_payload_length) {
-                return -1;
-            }
-            ptr = dns_payload + offset;
-            jumped = 1;
-        } else {
-            /* Nekomprimovaný název */
-            ptr++;
-            if (ptr + label_length > end) {
-                return -1;
-            }
-            if (output_pos + label_length + 1 >= output_size) {
-                return -1;
-            }
-            memcpy(output + output_pos, ptr, label_length);
-            output_pos += label_length;
-            output[output_pos++] = '.';
-            ptr += label_length;
-            if (!jumped) {
-                total_length += label_length + 1;
-            }
-        }
-    }
-    if (!jumped) {
-        total_length += 1; /* Pro závěrečný nulový bajt */
-    }
-    if (output_pos > 0) {
-        output[output_pos - 1] = '\0'; /* Nahradíme poslední tečku nulovým znakem */
-    } else {
-        output[0] = '\0';
-    }
-    if (!jumped) {
-        ptr++; /* Posuneme se za závěrečný nulový bajt */
-    }
-    return total_length;
+    return len;
 }
 
-void parse_resource_records(const u_char **ptr, int *remaining_length, int count,
-                            const u_char *dns_payload, int dns_payload_length,
+void parse_resource_records(ns_msg *handle, ns_sect section, int count,
                             const char *section_name, Arguments *args) {
-    int section_printed = 0;
+    // Empty RR, skip
+    if (count <= 0) {
+        return;
+    }
+
+    ns_rr rr; // Resource record structure.
+    int records_printed = 0; // Printed rr counter
+    char type_str_buffer[16]; // Buffer for type string, for printing unsupported types
+    char class_str_buffer[16]; // Buffer for class string, for printing unsupported types
 
     for (int i = 0; i < count; i++) {
-        /* Parse Resource Record */
-        char domain_name[256];
-        int name_length = dns_extract_name(dns_payload, dns_payload_length, *ptr, domain_name, sizeof(domain_name));
-        if (name_length == -1) {
-            fprintf(stderr, "Error parsing domain name in %s\n", section_name);
-            return;
-        }
-        *ptr += name_length;
-        *remaining_length -= name_length;
 
-        if (*remaining_length < 10) {
-            fprintf(stderr, "Not enough data for Resource Record\n");
+        if (ns_parserr(handle, section, i, &rr) < 0) {
+            fprintf(stderr, "Error parsing resource record\n");
             return;
         }
 
-        uint16_t rr_type = ntohs(*(uint16_t *)(*ptr));
-        *ptr += 2;
-        //uint16_t rr_class = ntohs(*(uint16_t *)(*ptr));
-        *ptr += 2;
-        uint32_t rr_ttl = ntohl(*(uint32_t *)(*ptr));
-        *ptr += 4;
-        uint16_t rr_rdlength = ntohs(*(uint16_t *)(*ptr));
-        *ptr += 2;
+        // Extract fields from the resource record.
+        const char *domain_name = ns_rr_name(rr);   
+        uint16_t rr_type = ns_rr_type(rr);          
+        uint16_t rr_class = ns_rr_class(rr);        
+        uint32_t rr_ttl = ns_rr_ttl(rr);            
+        uint16_t rr_rdlength = ns_rr_rdlen(rr);     
+        const u_char *rdata = ns_rr_rdata(rr);     
 
-        *remaining_length -= 10;
-        if (*remaining_length < rr_rdlength) {
-            fprintf(stderr, "Not enough data for RDATA\n");
-            return;
+        //char rdata_str[1024];
+        const char *rr_type_str = NULL; 
+        const char *class_str = NULL;  
+        int print_record = 0; // Flag for verbose mode
+
+        // Map RR type to string
+        rr_type_str = rr_type_to_string(rr_type);
+        if (rr_type_str == NULL) {
+            snprintf(type_str_buffer, sizeof(type_str_buffer), "TYPE%d", rr_type);
+            rr_type_str = type_str_buffer;
         }
 
-        const u_char *rdata = *ptr;
-        *ptr += rr_rdlength;
-        *remaining_length -= rr_rdlength;
+        // Map RR class to string
+        class_str = rr_class_to_string(rr_class);
+        if (class_str == NULL) {
+            snprintf(class_str_buffer, sizeof(class_str_buffer), "CLASS%d", rr_class);
+            class_str = class_str_buffer;
+        }
 
-        /* Prepare strings for output */
-        const char *rr_type_str = NULL;
-        //char rr_type_buffer[16];
-        char rdata_str[1024]; /* Increased size for SOA records */
+        // Allocate rdata conversion buffer
+        // * 4 so it can hold worst-case conversion, each byte can be string representation of 4, + 1 for null terminator
+        size_t rdata_str_size = rr_rdlength * 4 + 1; 
+        char *rdata_str = malloc(rdata_str_size);
+        if (!rdata_str) {
+            fprintf(stderr, "Memory allocation failed for RDATA string\n");
+            continue;
+        }
+        rdata_str[0] = '\0';
 
-        /* Determine rr_type_str and parse rdata */
-        int print_record = 0;
-
+        // RR Type parsing
         switch (rr_type) {
-            case 1: { /* A */
-                rr_type_str = "A";
+            case ns_t_a: { // A
+                if (rr_rdlength != 4) {
+                    // A records should have an RDATA length of 4 bytes, RFC 1035
+                    continue;
+                }
                 char ip_str[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET, rdata, ip_str, INET_ADDRSTRLEN);
-                strcpy(rdata_str, ip_str);
-                /* Save translation */
+                inet_ntop(AF_INET, rdata, ip_str, sizeof(ip_str));
+                snprintf(rdata_str, rdata_str_size, "%s", ip_str);
+
                 save_translation(domain_name, ip_str, args);
+
                 print_record = 1;
                 break;
             }
-            case 28: { /* AAAA */
-                rr_type_str = "AAAA";
+            case ns_t_aaaa: { // AAAA
+                if (rr_rdlength != 16) {
+                    // AAAA records should have an RDATA length of 16 bytes, RFC 3596
+                    continue;
+                }
                 char ip6_str[INET6_ADDRSTRLEN];
-                inet_ntop(AF_INET6, rdata, ip6_str, INET6_ADDRSTRLEN);
-                strcpy(rdata_str, ip6_str);
-                /* Save translation */
+                inet_ntop(AF_INET6, rdata, ip6_str, sizeof(ip6_str));
+                snprintf(rdata_str, rdata_str_size, "%s", ip6_str);
+
                 save_translation(domain_name, ip6_str, args);
+
                 print_record = 1;
                 break;
             }
-            case 2: { /* NS */
-                rr_type_str = "NS";
-                char ns_name[256];
-                int ns_name_length = dns_extract_name(dns_payload, dns_payload_length, rdata, ns_name, sizeof(ns_name));
-                if (ns_name_length == -1) {
-                    fprintf(stderr, "Error parsing NS RDATA\n");
-                    return;
+            case ns_t_ns: { // NS
+                char ns_name[256]; // 256; RFC 1035 3.3
+                int len = dn_expand(ns_msg_base(*handle), ns_msg_end(*handle), rdata, ns_name, sizeof(ns_name));
+                if (len < 0) {
+                    fprintf(stderr, "Error expanding NS RDATA\n");
+                    continue;
                 }
-                strcpy(rdata_str, ns_name);
+                snprintf(rdata_str, rdata_str_size, "%s", ns_name);
+                
+                save_domain_name(ns_name, args);
+
                 print_record = 1;
                 break;
             }
-            case 5: { /* CNAME */
-                rr_type_str = "CNAME";
+            case ns_t_cname: { // CNAME
                 char cname[256];
-                int cname_length = dns_extract_name(dns_payload, dns_payload_length, rdata, cname, sizeof(cname));
-                if (cname_length == -1) {
-                    fprintf(stderr, "Error parsing CNAME RDATA\n");
-                    return;
+                int len = dn_expand(ns_msg_base(*handle), ns_msg_end(*handle), rdata, cname, sizeof(cname));
+                if (len < 0) {
+                    fprintf(stderr, "Error expanding CNAME RDATA\n");
+                    continue;
                 }
-                strcpy(rdata_str, cname);
+                snprintf(rdata_str, rdata_str_size, "%s", cname);
+
+                save_domain_name(cname, args);
+                
                 print_record = 1;
                 break;
             }
-            case 15: { /* MX */
-                rr_type_str = "MX";
-                if (rr_rdlength < 2) {
+            case ns_t_mx: { // MX
+                if (rr_rdlength < 3) { // Preference (2 bytes) + at least 1 byte for exchange domain name.
                     fprintf(stderr, "Invalid MX RDATA length\n");
-                    return;
+                    continue;
                 }
-                uint16_t preference = ntohs(*(uint16_t *)rdata);
+
+                // First two bytes = preference
+                uint16_t preference = ns_get16(rdata);
                 char exchange[256];
-                int exchange_length = dns_extract_name(dns_payload, dns_payload_length, rdata + 2, exchange, sizeof(exchange));
-                if (exchange_length == -1) {
-                    fprintf(stderr, "Error parsing MX RDATA\n");
-                    return;
+                // The rest is the exchange domain name.
+                int len = dn_expand(ns_msg_base(*handle), ns_msg_end(*handle), rdata + 2, exchange, sizeof(exchange));
+                if (len < 0) {
+                    fprintf(stderr, "Error expanding MX RDATA\n");
+                    continue;
                 }
-                snprintf(rdata_str, sizeof(rdata_str), "%u %s", preference, exchange);
+                snprintf(rdata_str, rdata_str_size, "%u %s", preference, exchange);
+                
+                save_domain_name(exchange, args);
+                
                 print_record = 1;
                 break;
             }
-            case 6: { /* SOA */
-                rr_type_str = "SOA";
+            case ns_t_soa: { // SOA
                 const u_char *soa_ptr = rdata;
                 char mname[256], rname[256];
-                int mname_length = dns_extract_name(dns_payload, dns_payload_length, soa_ptr, mname, sizeof(mname));
-                if (mname_length == -1) {
-                    fprintf(stderr, "Error parsing SOA MNAME\n");
-                    return;
+                
+                // Expanding primary name server domain name
+                int len = dn_expand(ns_msg_base(*handle), ns_msg_end(*handle), soa_ptr, mname, sizeof(mname));
+                if (len < 0) {
+                    fprintf(stderr, "Error expanding SOA MNAME\n");
+                    continue;
                 }
-                soa_ptr += mname_length;
+                soa_ptr += len;
 
-                int rname_length = dns_extract_name(dns_payload, dns_payload_length, soa_ptr, rname, sizeof(rname));
-                if (rname_length == -1) {
-                    fprintf(stderr, "Error parsing SOA RNAME\n");
-                    return;
+                // Expanding responsible authority mailbox domain name
+                len = dn_expand(ns_msg_base(*handle), ns_msg_end(*handle), soa_ptr, rname, sizeof(rname));
+                if (len < 0) {
+                    fprintf(stderr, "Error expanding SOA RNAME\n");
+                    continue;
                 }
-                soa_ptr += rname_length;
+                soa_ptr += len;
 
-                if (soa_ptr + 20 > rdata + rr_rdlength) {
+                // Cehck ifthere is enough space left for the rest of the SOA
+                if ((soa_ptr + 20) > (rdata + rr_rdlength)) {
+                    // 5 * 4byte fields = 20
                     fprintf(stderr, "Not enough data for SOA record\n");
-                    return;
+                    continue;
                 }
 
-                uint32_t serial = ntohl(*(uint32_t *)soa_ptr);
-                soa_ptr += 4;
-                uint32_t refresh = ntohl(*(uint32_t *)soa_ptr);
-                soa_ptr += 4;
-                uint32_t retry = ntohl(*(uint32_t *)soa_ptr);
-                soa_ptr += 4;
-                uint32_t expire = ntohl(*(uint32_t *)soa_ptr);
-                soa_ptr += 4;
-                uint32_t minimum = ntohl(*(uint32_t *)soa_ptr);
+                // Extract the 5 fields (32bit)
+                uint32_t serial = ns_get32(soa_ptr); soa_ptr += 4;
+                uint32_t refresh = ns_get32(soa_ptr); soa_ptr += 4;
+                uint32_t retry = ns_get32(soa_ptr); soa_ptr += 4;
+                uint32_t expire = ns_get32(soa_ptr); soa_ptr += 4;
+                uint32_t minimum = ns_get32(soa_ptr);
 
-                snprintf(rdata_str, sizeof(rdata_str),
-                         "%s %s (\n        %u ; Serial\n        %u ; Refresh\n        %u ; Retry\n        %u ; Expire\n        %u ) ; Minimum",
+                snprintf(rdata_str, rdata_str_size, "%s %s %u %u %u %u %u", 
                          mname, rname, serial, refresh, retry, expire, minimum);
+                
+                save_domain_name(mname, args);
+                // save_domain_name(rname, args);
+                
                 print_record = 1;
                 break;
             }
-            case 33: { /* SRV */
-                rr_type_str = "SRV";
-                if (rr_rdlength < 6) {
+            case ns_t_srv: { // SRV
+                if (rr_rdlength < 7) { // Priority (2 bytes), Weight (2 bytes), Port (2 bytes), Target (>=1 byte).
                     fprintf(stderr, "Invalid SRV RDATA length\n");
-                    return;
+                    continue;
                 }
-                uint16_t priority = ntohs(*(uint16_t *)rdata);
-                uint16_t weight = ntohs(*(uint16_t *)(rdata + 2));
-                uint16_t port = ntohs(*(uint16_t *)(rdata + 4));
+                
+                uint16_t priority = ns_get16(rdata);
+                uint16_t weight = ns_get16(rdata + 2);
+                uint16_t port = ns_get16(rdata + 4);
                 char target[256];
-                int target_length = dns_extract_name(dns_payload, dns_payload_length, rdata + 6, target, sizeof(target));
-                if (target_length == -1) {
-                    fprintf(stderr, "Error parsing SRV RDATA\n");
-                    return;
+                
+                // Expand the target domain name
+                int len = dn_expand(ns_msg_base(*handle), ns_msg_end(*handle), rdata + 6, target, sizeof(target));
+                if (len < 0) {
+                    fprintf(stderr, "Error expanding SRV RDATA\n");
+                    continue;
                 }
-                snprintf(rdata_str, sizeof(rdata_str), "%u %u %u %s", priority, weight, port, target);
+
+                snprintf(rdata_str, rdata_str_size, "%u %u %u %s", priority, weight, port, target);
+                
+                save_domain_name(target, args);
+                
                 print_record = 1;
                 break;
             }
-            default:
-                /* Ignore other record types */
+            default: {
+                // Unsupported RR types, don't parse
+                strcpy(rdata_str, "[Data not parsed]");
+                print_record = 1;
                 break;
+            }
         }
 
-        /* Save domain name */
-        printf("Calling save_domain_name with domain_name: %s\n", domain_name);
+        // Domain name from Name field
         save_domain_name(domain_name, args);
 
-        /* Output the resource record */
+        // Verbose output
         if (args->verbose && print_record) {
-            /* Print section header if it hasn't been printed yet */
-            if (!section_printed) {
-                printf("\n[%s]\n", section_name);
-                section_printed = 1;  // Ensure it only prints once
+            // Print section header on first iteration
+            if (records_printed == 0) {
+                printf("\n[%s]\n", section_name); 
             }
-
-            /* Now print the actual record */
-            printf("%s %d IN %s %s\n", domain_name, rr_ttl, rr_type_str, rdata_str);
+            printf("%s %u %s %s %s\n", domain_name, rr_ttl, class_str, rr_type_str, rdata_str);
+            records_printed++; // bogo binted 
         }
+        free(rdata_str);
     }
 }
-
-
-

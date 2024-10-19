@@ -1,24 +1,27 @@
-/* dns-monitor.c */
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
-#include <netinet/ip.h>     // For struct ip
-#include <netinet/ip6.h>    // For struct ip6_hdr
-#include <netinet/udp.h>    // For struct udphdr
+#include <sys/types.h>  
+#include <stdint.h>  
+#include <arpa/inet.h> 
+#include <netinet/in.h>
+#include <netinet/ip.h>     
+#include <netinet/ip6.h>    
+#include <netinet/udp.h>   
 #include "argparse.h"
 #include "pcapinit.h"
 #include "dns_utils.h"
 
-volatile sig_atomic_t stop = 0; /* Flag for signal handling */
-pcap_t *handle = NULL;          /* Global pcap handle */
+volatile sig_atomic_t stop = 0;
+pcap_t *handle = NULL;          // pcap handle
 
-/* Signal handler for SIGINT */
-void handle_sigint(int sig) {
+// Signal handler for SIGINT, SIGTERM, SIGQUIT
+void signal_handler(int sig) {
     (void)sig;
-    stop = 1; /* Set the stop flag */
+    stop = 1;
 
     if (handle) {
-        pcap_breakloop(handle); /* Break the pcap loop */
+        pcap_breakloop(handle); // break the pcap loop
     }
 }
 
@@ -44,60 +47,46 @@ int set_filter(pcap_t *handle) {
 
 int main(int argc, char *argv[]) {
     Arguments args;
-    //pcap_t *handle;
 
-    /* Parsování argumentů */
+    // Parse args
     if (parse_arguments(argc, argv, &args) != 0) {
-        /* Chyba při parsování argumentů */
         return EXIT_FAILURE;
     }
 
-    /* Validace argumentů */
+    // Validate args
     if (validate_arguments(&args) != 0) {
-        /* Chyba při validaci argumentů */
         return EXIT_FAILURE;
     }
 
-    /* Debug: Print the domains and translations file paths */
-    printf("Domains File: %s\n", args.domains_file ? args.domains_file : "None");
-    printf("Translations File: %s\n", args.translations_file ? args.translations_file : "None");
-
-    /* Inicializace rozhraní nebo načtení PCAP souboru */
+    // init interface or read pcap file
     handle = initialize_pcap(&args);
     if (!handle) {
-        /* Chyba při inicializaci pcap */
         return EXIT_FAILURE;
     }
 
-    /* Set up the signal handler for SIGINT */
-    signal(SIGINT, handle_sigint);
+    // Signal handlers for SIGINT, SIGTERM, SIGQUIT
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+    signal(SIGQUIT, signal_handler);
 
-    /* Nastavení filtru */
+    // Set filter(udp port 80)
     if (set_filter(handle) != 0) {
-        /* Chyba při nastavení filtru */
         pcap_close(handle);
         return EXIT_FAILURE;
     }
 
-    // printf("Interface: %s\n", args.interface ? args.interface : "None");
-    // printf("PCAP File: %s\n", args.pcap_file ? args.pcap_file : "None");
-    // printf("Verbose Mode: %s\n", args.verbose ? "Enabled" : "Disabled");
-    // printf("Domains File: %s\n", args.domains_file ? args.domains_file : "None");
-    // printf("Translations File: %s\n", args.translations_file ? args.translations_file : "None");
-
-    /* Zpracování paketů */
-    /* Zde implementujeme smyčku pro zpracování paketů */
+    // Start processing packets
     pcap_loop(handle, 0, packet_handler, (u_char *)&args);
 
-    /* After pcap_loop exits */
+    // Signal stop
     if (stop) {
-        fprintf(stderr, "SIGINT received, exiting...\n");
+        fprintf(stderr, "Signal %d received, exiting...\n", stop);
     }
 
-    /* Nezapomeňte uzavřít pcap handle před ukončením programu */
+    // Close the handle
     pcap_close(handle);
 
-    /* Na konci programu */
+    // Close (if needed) files and free linked lists
     close_domain_file();
     close_translations_file();
 
