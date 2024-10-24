@@ -12,6 +12,8 @@
 // For storing the link layer type
 extern int linktype;
 
+int is_supported_type(uint16_t type);
+
 const char *rr_class_to_string(uint16_t rr_class);
 
 const char *rr_type_to_string(uint16_t rr_type);

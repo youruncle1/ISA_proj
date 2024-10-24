@@ -7,7 +7,7 @@
 #include <netinet/ip6.h>
 #include <netinet/udp.h>
 #include <arpa/inet.h>
-#include "pcapinit.h"
+#include "pcap_handler.h"
 #include <arpa/nameser.h>
 #include <stdlib.h>
 #include <resolv.h>
@@ -216,6 +216,12 @@ void packet_handler(u_char *args_ptr, const struct pcap_pkthdr *header, const u_
     parse_dns_packet(dns_payload, dns_payload_length, args, ip_hdr, ip6_hdr, udp_hdr, header);
 }
 
+// Checks if the RR type is supported or not
+int is_supported_type(uint16_t type) {
+    return (type == ns_t_a || type == ns_t_aaaa || type == ns_t_ns ||
+            type == ns_t_mx || type == ns_t_soa || type == ns_t_cname ||
+            type == ns_t_srv);
+}
 
 void parse_dns_packet(const u_char *dns_payload, int dns_payload_length, Arguments *args,
                       const struct ip *ip_hdr, const struct ip6_hdr *ip6_hdr,
@@ -233,7 +239,7 @@ void parse_dns_packet(const u_char *dns_payload, int dns_payload_length, Argumen
         return;
     }
 
-    // Extract DNS header information
+    // Extract msg ID
     uint16_t id = ns_msg_id(handle);
 
     // Extract flags
@@ -297,9 +303,7 @@ void parse_dns_packet(const u_char *dns_payload, int dns_payload_length, Argumen
 
     // Parse Question Section
     if (qdcount > 0) {
-        if (args->verbose) {
-            printf("[Question Section]\n");
-        }
+        int supported_questions = 0; // Counter for supported questions
 
         for (int i = 0; i < qdcount; i++) {
             ns_rr rr;
@@ -307,30 +311,41 @@ void parse_dns_packet(const u_char *dns_payload, int dns_payload_length, Argumen
                 fprintf(stderr, "Error parsing question section\n");
                 return;
             }
-            // TODO: maybe change to dn_expand???
-            const char *domain_name = ns_rr_name(rr); // first occurence of domain name, should be uncompresssed anyways
+            const char *domain_name = ns_rr_name(rr);
             uint16_t qtype = ns_rr_type(rr);
             uint16_t qclass = ns_rr_class(rr);
 
+            
+            if (!is_supported_type(qtype)) {
+                // Unsupported type, skip printing
+                continue;
+            }
+
+            // For printing [Question]
+            supported_questions++;
+
             // Map QTYPE to string
-            char type_str_buffer[16];
             const char *type_str = rr_type_to_string(qtype);
             if (type_str == NULL) {
-                snprintf(type_str_buffer, sizeof(type_str_buffer), "TYPE%d", qtype);
-                type_str = type_str_buffer;
+                // Should not happen but just in case
+                type_str = "UNKNOWN";
             }
 
             // Map QCLASS to string
-            char class_str_buffer[16];
             const char *class_str = rr_class_to_string(qclass);
             if (class_str == NULL) {
-                snprintf(class_str_buffer, sizeof(class_str_buffer), "CLASS%d", qclass);
-                class_str = class_str_buffer;
+                class_str = "UNKNOWN";
             }
 
-
+            // Save domain name
             save_domain_name(domain_name, args);
 
+            // Print the question section header if this is the first supported question
+            if (args->verbose && supported_questions == 1) {
+                printf("[Question Section]\n");
+            }
+
+            // Verbose output
             if (args->verbose) {
                 printf("%s %s %s\n", domain_name, class_str, type_str);
             }
@@ -374,8 +389,8 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
 
     ns_rr rr; // Resource record structure.
     int records_printed = 0; // Printed rr counter
-    char type_str_buffer[16]; // Buffer for type string, for printing unsupported types
-    char class_str_buffer[16]; // Buffer for class string, for printing unsupported types
+    //char type_str_buffer[16]; // Buffer for type string, for printing unsupported types
+    //char class_str_buffer[16]; // Buffer for class string, for printing unsupported types
 
     for (int i = 0; i < count; i++) {
 
@@ -392,26 +407,28 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
         uint16_t rr_rdlength = ns_rr_rdlen(rr);     
         const u_char *rdata = ns_rr_rdata(rr);     
 
+        // Check if the RR type is supported
+        if (!is_supported_type(rr_type)) {
+            // Unsupported type, skip
+            continue;
+        }
+
         //char rdata_str[1024];
-        const char *rr_type_str = NULL; 
-        const char *class_str = NULL;  
+        //const char *rr_type_str = NULL; 
+        //const char *class_str = NULL;  
         int print_record = 0; // Flag for verbose mode
 
-        // Map RR type to string
-        rr_type_str = rr_type_to_string(rr_type);
+        // Map RR type string
+        const char *rr_type_str = rr_type_to_string(rr_type);
         if (rr_type_str == NULL) {
-            snprintf(type_str_buffer, sizeof(type_str_buffer), "TYPE%d", rr_type);
-            rr_type_str = type_str_buffer;
+            rr_type_str = "UNKNOWN";
         }
-
         // Map RR class to string
-        class_str = rr_class_to_string(rr_class);
+        const char *class_str = rr_class_to_string(rr_class);
         if (class_str == NULL) {
-            snprintf(class_str_buffer, sizeof(class_str_buffer), "CLASS%d", rr_class);
-            class_str = class_str_buffer;
+            class_str = "UNKNOWN";
         }
-
-        // Allocate rdata conversion buffer
+        // Allocate rdata for conversion
         // * 4 so it can hold worst-case conversion, each byte can be string representation of 4, + 1 for null terminator
         size_t rdata_str_size = rr_rdlength * 4 + 1; 
         char *rdata_str = malloc(rdata_str_size);
@@ -570,9 +587,9 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
                 break;
             }
             default: {
-                // Unsupported RR types, don't parse
-                strcpy(rdata_str, "[Data not parsed]");
-                print_record = 1;
+                // Unsupported RR types, dontt parse
+                //strcpy(rdata_str, "[Data not parsed]");
+                print_record = 0;
                 break;
             }
         }

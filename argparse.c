@@ -9,7 +9,14 @@
 #include "argparse.h"
 
 void print_usage() {
-    fprintf(stderr, "Usage: ./dns-monitor (-i <interface> | -p <pcapfile>) [-v] [-d <domainsfile>] [-t <translationsfile>]\n");
+    fprintf(stderr, "Usage: ./dns-monitor (-i <interface> | -p <pcapfile>) [-v] [-d <domainsfile>] [-t <translationsfile>] [-h]\n");
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  -i <interface>       : Specify the network interface to listen on.\n");
+    fprintf(stderr, "  -p <pcapfile>        : Specify the PCAP file to process.\n");
+    fprintf(stderr, "  -v                   : Enable verbose mode.\n");
+    fprintf(stderr, "  -d <domainsfile>     : Specify the file to save domain names.\n");
+    fprintf(stderr, "  -t <translationsfile>: Specify the file to save domain-to-IP translations.\n");
+    fprintf(stderr, "  -h                   : Display this help message.\n");
 }
 
 int parse_arguments(int argc, char *argv[], Arguments *args) {
@@ -20,8 +27,11 @@ int parse_arguments(int argc, char *argv[], Arguments *args) {
 
     memset(args, 0, sizeof(Arguments));
 
-    while ((opt = getopt(argc, argv, "i:p:vd:t:")) != -1) {
+    while ((opt = getopt(argc, argv, "i:p:vd:t:h")) != -1) {
         switch (opt) {
+            case 'h': 
+                print_usage();
+                return 0;
             case 'i':
                 if (p_flag) {
                     fprintf(stderr, "Error: Cannot use -i and -p together.\n");

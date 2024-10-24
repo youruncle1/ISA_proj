@@ -9,7 +9,7 @@
 #include <netinet/ip6.h>    
 #include <netinet/udp.h>   
 #include "argparse.h"
-#include "pcapinit.h"
+#include "pcap_handler.h"
 #include "dns_utils.h"
 
 volatile sig_atomic_t stop = 0;

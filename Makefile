@@ -3,7 +3,7 @@ CFLAGS = -Wall -Wextra -std=c11 -D_DEFAULT_SOURCE
 LDFLAGS = -lpcap
 
 TARGET = dns-monitor
-SOURCES = dns-monitor.c argparse.c pcapinit.c dns_utils.c
+SOURCES = dns-monitor.c argparse.c pcap_handler.c dns_utils.c
 OBJECTS = $(SOURCES:.c=.o)
 
 all: $(TARGET)

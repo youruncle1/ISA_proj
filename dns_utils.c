@@ -35,16 +35,16 @@ void save_domain_name(const char *domain_name, Arguments *args) {
     }
     // Don't save empty
     if (domain_name[0] == '\0') {
-        printf("Debug: ASDASDASD");
+        //printf("Debug: DOMAIN EMPTY");
         fprintf(stderr, "Warning: domain_name is empty, skipping save.\n");
         return;
     }
-    //printf("Debug: BEFORE STRCMP");
+    //printf("Debug: BEFORE DOMAIN STRCMP");
     //Don't save root . 
     if (strcmp(domain_name, ".") == 0) {
         return;
     }
-    //printf("Debug: AFTER STRCMP");
+    //printf("Debug: AFTER DOMAIN STRCMP");
     // Don't save if no file is specified
     if (!args->domains_file) {
         return;
