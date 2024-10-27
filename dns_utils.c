@@ -30,13 +30,13 @@ static FILE *translations_fp = NULL;
 void save_domain_name(const char *domain_name, Arguments *args) {
     // Check if domain_name is NULL or empty or root domain
     if (domain_name == NULL) {
-        fprintf(stderr, "Warning: domain_name is NULL, skipping save.\n");
+        //fprintf(stderr, "Warning: domain_name is NULL, skipping save.\n");
         return;
     }
     // Don't save empty
     if (domain_name[0] == '\0') {
         //printf("Debug: DOMAIN EMPTY");
-        fprintf(stderr, "Warning: domain_name is empty, skipping save.\n");
+        //fprintf(stderr, "Warning: domain_name is empty, skipping save.\n");
         return;
     }
     //printf("Debug: BEFORE DOMAIN STRCMP");
@@ -62,7 +62,7 @@ void save_domain_name(const char *domain_name, Arguments *args) {
     // Add new domain to the Linekd List
     DomainNode *new_node = (DomainNode *)malloc(sizeof(DomainNode));
     if (!new_node) {
-        fprintf(stderr, "Malloc error! skipping domain save\n");
+        fprintf(stderr, "Memory allocation failed when saving domain\n");
         return;
     }
     strncpy(new_node->domain_name, domain_name, sizeof(new_node->domain_name));
@@ -71,7 +71,7 @@ void save_domain_name(const char *domain_name, Arguments *args) {
     domain_list = new_node; 
 
     if (!domains_fp) {
-        domains_fp = fopen(args->domains_file, "a");
+        domains_fp = fopen(args->domains_file, "w");
         if (!domains_fp) {
             fprintf(stderr, "Error opening domains file: %s\n", args->domains_file);
             return;
@@ -101,7 +101,7 @@ void save_translation(const char *domain_name, const char *ip_address, Arguments
     // Add new translation to the Linked List
     TranslationNode *new_node = (TranslationNode *)malloc(sizeof(TranslationNode));
     if (!new_node) {
-        fprintf(stderr, "Memory allocation failed for translation\n");
+        fprintf(stderr, "Memory allocation failed when saving translation\n");
         return;
     }
     strncpy(new_node->domain_name, domain_name, sizeof(new_node->domain_name));
@@ -113,7 +113,7 @@ void save_translation(const char *domain_name, const char *ip_address, Arguments
 
     
     if (!translations_fp) {
-        translations_fp = fopen(args->translations_file, "a");
+        translations_fp = fopen(args->translations_file, "w");
         if (!translations_fp) {
             fprintf(stderr, "Error opening translations file: %s\n", args->translations_file);
             return;

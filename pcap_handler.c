@@ -16,6 +16,7 @@
 
 #define SIZE_ETHERNET 14       // Ethernet header size
 #define SIZE_LINUX_SLL 16      // Linux cooked header size
+#define SIZE_LINUX_SLL2 20     // Linux cooked header v2 size
 #define SIZE_NULL_LOOPBACK 4   // Null/Loopback header size
 
 
@@ -115,13 +116,20 @@ void packet_handler(u_char *args_ptr, const struct pcap_pkthdr *header, const u_
             ip_packet = packet + link_header_length;
             break;
         }
+        case DLT_LINUX_SLL2: {// Linux cooked capture v2
+            link_header_length = SIZE_LINUX_SLL2;
+            ip_packet = packet + link_header_length;
+            break;
+        }
         case DLT_NULL: // BSD loopback encapsulation
         case DLT_LOOP: { // OpenBSD loopback encapsulation
             link_header_length = SIZE_NULL_LOOPBACK;
             ip_packet = packet + link_header_length;
             break;
         }
-        case DLT_RAW: { // Raw IP packet
+        case DLT_RAW:  // Raw IP packet
+        case DLT_IPV4: // IPv4 without link-layer header
+        case DLT_IPV6: { // IPv6 without link-layer header
             ip_packet = packet;
             break;
         }
@@ -294,7 +302,7 @@ void parse_dns_packet(const u_char *dns_payload, int dns_payload_length, Argumen
         printf("DstPort: UDP/%d\n", ntohs(udp_hdr->uh_dport));
         printf("Identifier: 0x%X\n", id);
         printf("Flags: QR=%d, OPCODE=%d, AA=%d, TC=%d, RD=%d, RA=%d, AD=%d, CD=%d, RCODE=%d\n", qr, opcode, aa, tc, rd, ra, ad, cd, rcode);
-        printf("\n"); 
+        //printf("\n"); 
     } 
     else {
         char qr_char = (qr == 0) ? 'Q' : 'R'; 
@@ -342,7 +350,7 @@ void parse_dns_packet(const u_char *dns_payload, int dns_payload_length, Argumen
 
             // Print the question section header if this is the first supported question
             if (args->verbose && supported_questions == 1) {
-                printf("[Question Section]\n");
+                printf("\n[Question Section]\n");
             }
 
             // Verbose output
@@ -522,7 +530,7 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
                 const u_char *soa_ptr = rdata;
                 char mname[256], rname[256];
                 
-                // Expanding primary name server domain name
+                // Expanding NS domain name
                 int len = dn_expand(ns_msg_base(*handle), ns_msg_end(*handle), soa_ptr, mname, sizeof(mname));
                 if (len < 0) {
                     fprintf(stderr, "Error expanding SOA MNAME\n");
@@ -530,7 +538,7 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
                 }
                 soa_ptr += len;
 
-                // Expanding responsible authority mailbox domain name
+                // Expanding auth mail
                 len = dn_expand(ns_msg_base(*handle), ns_msg_end(*handle), soa_ptr, rname, sizeof(rname));
                 if (len < 0) {
                     fprintf(stderr, "Error expanding SOA RNAME\n");

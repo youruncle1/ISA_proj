@@ -146,7 +146,7 @@ int validate_arguments(Arguments *args) {
 
     // Domains file validation
     if (args->domains_file) {
-        FILE *file = fopen(args->domains_file, "a");
+        FILE *file = fopen(args->domains_file, "w");
         if (!file) {
             fprintf(stderr, "Error: Cannot open domains file '%s' for writing: %s\n", args->domains_file, strerror(errno));
             return -1;
@@ -156,7 +156,7 @@ int validate_arguments(Arguments *args) {
 
     // Translations file validation
     if (args->translations_file) {
-        FILE *file = fopen(args->translations_file, "a");
+        FILE *file = fopen(args->translations_file, "w");
         if (!file) {
             fprintf(stderr, "Error: Cannot open translations file '%s' for writing: %s\n", args->translations_file, strerror(errno));
             return -1;
