@@ -329,7 +329,7 @@ void parse_dns_packet(const u_char *dns_payload, int dns_payload_length, Argumen
                 continue;
             }
 
-            // For printing [Question]
+            // For printing [Question], if any supported queries are inside it
             supported_questions++;
 
             // Map QTYPE to string
@@ -355,13 +355,9 @@ void parse_dns_packet(const u_char *dns_payload, int dns_payload_length, Argumen
 
             // Verbose output
             if (args->verbose) {
-                printf("%s %s %s\n", domain_name, class_str, type_str);
+                printf("%s. %s %s\n", domain_name, class_str, type_str);
             }
         }
-
-        //if (args->verbose) {
-        //    printf("\n"); 
-        //}
     }
 
     // Parse Answer, Auth, Additional sections
@@ -397,8 +393,6 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
 
     ns_rr rr; // Resource record structure.
     int records_printed = 0; // Printed rr counter
-    //char type_str_buffer[16]; // Buffer for type string, for printing unsupported types
-    //char class_str_buffer[16]; // Buffer for class string, for printing unsupported types
 
     for (int i = 0; i < count; i++) {
 
@@ -421,9 +415,8 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
             continue;
         }
 
-        //char rdata_str[1024];
-        //const char *rr_type_str = NULL; 
-        //const char *class_str = NULL;  
+        char *rdata_str = NULL;
+        
         int print_record = 0; // Flag for verbose mode
 
         // Map RR type string
@@ -436,15 +429,6 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
         if (class_str == NULL) {
             class_str = "UNKNOWN";
         }
-        // Allocate rdata for conversion
-        // * 4 so it can hold worst-case conversion, each byte can be string representation of 4, + 1 for null terminator
-        size_t rdata_str_size = rr_rdlength * 4 + 1; 
-        char *rdata_str = malloc(rdata_str_size);
-        if (!rdata_str) {
-            fprintf(stderr, "Memory allocation failed for RDATA string\n");
-            continue;
-        }
-        rdata_str[0] = '\0';
 
         // RR Type parsing
         switch (rr_type) {
@@ -455,9 +439,17 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
                 }
                 char ip_str[INET_ADDRSTRLEN];
                 inet_ntop(AF_INET, rdata, ip_str, sizeof(ip_str));
-                snprintf(rdata_str, rdata_str_size, "%s", ip_str);
 
                 save_translation(domain_name, ip_str, args);
+
+                // Allocate rdata_str for the IP address string
+                size_t rdata_str_size = strlen(ip_str) + 1; // +1 for null terminator
+                rdata_str = malloc(rdata_str_size);
+                if (!rdata_str) {
+                    fprintf(stderr, "Memory allocation failed for rdata_str in A record\n");
+                    continue;
+                }
+                strcpy(rdata_str, ip_str);
 
                 print_record = 1;
                 break;
@@ -469,9 +461,16 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
                 }
                 char ip6_str[INET6_ADDRSTRLEN];
                 inet_ntop(AF_INET6, rdata, ip6_str, sizeof(ip6_str));
-                snprintf(rdata_str, rdata_str_size, "%s", ip6_str);
 
                 save_translation(domain_name, ip6_str, args);
+
+                size_t rdata_str_size = strlen(ip6_str) + 1; // +1 for null terminator
+                rdata_str = malloc(rdata_str_size);
+                if (!rdata_str) {
+                    fprintf(stderr, "Memory allocation failed for rdata_str in AAAA record\n");
+                    continue;
+                }
+                strcpy(rdata_str, ip6_str);
 
                 print_record = 1;
                 break;
@@ -483,9 +482,16 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
                     fprintf(stderr, "Error expanding NS RDATA\n");
                     continue;
                 }
-                snprintf(rdata_str, rdata_str_size, "%s", ns_name);
-                
                 save_domain_name(ns_name, args);
+
+                // Length of ns_name + dot(1) + null terminator(1)
+                size_t rdata_str_size = strlen(ns_name) + 1 + 1;
+                rdata_str = malloc(rdata_str_size);
+                if (!rdata_str) {
+                    fprintf(stderr, "Memory allocation failed for rdata_str in NS record\n");
+                    continue;
+                }
+                snprintf(rdata_str, rdata_str_size, "%s.", ns_name);
 
                 print_record = 1;
                 break;
@@ -497,9 +503,17 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
                     fprintf(stderr, "Error expanding CNAME RDATA\n");
                     continue;
                 }
-                snprintf(rdata_str, rdata_str_size, "%s", cname);
-
+                //snprintf(rdata_str, rdata_str_size, "%s.", cname);
                 save_domain_name(cname, args);
+
+                // Length of cname + dot(1) + null termiantor(1)
+                size_t rdata_str_size = strlen(cname) + 1 + 1;
+                rdata_str = malloc(rdata_str_size);
+                if (!rdata_str) {
+                    fprintf(stderr, "Memory allocation failed for rdata_str in CNAME record\n");
+                    continue;
+                }
+                snprintf(rdata_str, rdata_str_size, "%s.", cname);
                 
                 print_record = 1;
                 break;
@@ -513,15 +527,23 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
                 // First two bytes = preference
                 uint16_t preference = ns_get16(rdata);
                 char exchange[256];
-                // The rest is the exchange domain name.
+                // The rest is the exchange domain name
                 int len = dn_expand(ns_msg_base(*handle), ns_msg_end(*handle), rdata + 2, exchange, sizeof(exchange));
                 if (len < 0) {
                     fprintf(stderr, "Error expanding MX RDATA\n");
                     continue;
                 }
-                snprintf(rdata_str, rdata_str_size, "%u %s", preference, exchange);
-                
+                //snprintf(rdata_str, rdata_str_size, "%u %s.", preference, exchange);
                 save_domain_name(exchange, args);
+
+                // Max digits in preference (uint16_t): 5 + space(1) + exchange + dot(1) + null terminator(1)
+                size_t rdata_str_size = 5 + 1 + strlen(exchange) + 1 + 1;
+                rdata_str = malloc(rdata_str_size);
+                if (!rdata_str) {
+                    fprintf(stderr, "Memory allocation failed for rdata_str in MX record\n");
+                    continue;
+                }
+                snprintf(rdata_str, rdata_str_size, "%u %s.", preference, exchange);
                 
                 print_record = 1;
                 break;
@@ -560,11 +582,22 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
                 uint32_t expire = ns_get32(soa_ptr); soa_ptr += 4;
                 uint32_t minimum = ns_get32(soa_ptr);
 
-                snprintf(rdata_str, rdata_str_size, "%s %s %u %u %u %u %u", 
-                         mname, rname, serial, refresh, retry, expire, minimum);
-                
+                //snprintf(rdata_str, rdata_str_size, "%s. %s. %u %u %u %u %u", 
+                //         mname, rname, serial, refresh, retry, expire, minimum);
                 save_domain_name(mname, args);
                 // save_domain_name(rname, args);
+
+                // Length of mname + dot(1) + space(1) + Length of rname + dot(1) + space(1)
+                // + Max digits each field (10 digits) * 5 fields
+                // + Spaces between numbers(4) + Null terminator(1)
+                size_t rdata_str_size = strlen(mname) + 1 + 1 + strlen(rname) + 1 + 1 + (10 * 5) + 4 + 1;
+                rdata_str = malloc(rdata_str_size);
+                if (!rdata_str) {
+                    fprintf(stderr, "Memory allocation failed for rdata_str in SOA record\n");
+                    continue;
+                }
+                snprintf(rdata_str, rdata_str_size, "%s. %s. %u %u %u %u %u",
+                         mname, rname, serial, refresh, retry, expire, minimum);
                 
                 print_record = 1;
                 break;
@@ -586,10 +619,20 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
                     fprintf(stderr, "Error expanding SRV RDATA\n");
                     continue;
                 }
-
-                snprintf(rdata_str, rdata_str_size, "%u %u %u %s", priority, weight, port, target);
-                
+                //snprintf(rdata_str, rdata_str_size, "%u %u %u %s.", priority, weight, port, target);
                 save_domain_name(target, args);
+
+                // Max digits in priority, weight, port (uint16_t): 5 * 3 = 15
+                // + spaces between numbers(3)
+                // + target
+                // + Dot (1) + Null terminator(1)
+                size_t rdata_str_size = 15 + 3 + strlen(target) + 1 + 1;
+                rdata_str = malloc(rdata_str_size);
+                if (!rdata_str) {
+                    fprintf(stderr, "Memory allocation failed for rdata_str in SRV record\n");
+                    continue;
+                }
+                snprintf(rdata_str, rdata_str_size, "%u %u %u %s.", priority, weight, port, target);
                 
                 print_record = 1;
                 break;
@@ -611,9 +654,12 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
             if (records_printed == 0) {
                 printf("\n[%s]\n", section_name); 
             }
-            printf("%s %u %s %s %s\n", domain_name, rr_ttl, class_str, rr_type_str, rdata_str);
+            printf("%s. %u %s %s %s\n", domain_name, rr_ttl, class_str, rr_type_str, rdata_str);
             records_printed++; // bogo binted 
         }
-        free(rdata_str);
+        if (rdata_str) {
+            free(rdata_str);
+            rdata_str = NULL;
+        }
     }
 }
