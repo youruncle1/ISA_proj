@@ -26,8 +26,6 @@ void parse_dns_packet(const u_char *dns_payload, int dns_payload_length, Argumen
                       const struct ip *ip_hdr, const struct ip6_hdr *ip6_hdr,
                       const struct udphdr *udp_hdr, const struct pcap_pkthdr *header);
 
-int dns_extract_name(const u_char *dns_payload, int dns_payload_length, const u_char *ptr, char *output, int output_size);
-
 void parse_resource_records(ns_msg *handle, ns_sect section, int count, const char *section_name, Arguments *args);
 
 #endif /* PCAPINIT_H */

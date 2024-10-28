@@ -14,11 +14,11 @@
 #include <errno.h>
 #include "dns_utils.h"
 
+#define MAX_DOMAIN_NAME_LENGTH 256 // 256; RFC 1035 3.3
 #define SIZE_ETHERNET 14       // Ethernet header size
 #define SIZE_LINUX_SLL 16      // Linux cooked header size
 #define SIZE_LINUX_SLL2 20     // Linux cooked header v2 size
 #define SIZE_NULL_LOOPBACK 4   // Null/Loopback header size
-
 
 int linktype = 0;
 
@@ -226,8 +226,12 @@ void packet_handler(u_char *args_ptr, const struct pcap_pkthdr *header, const u_
 
 // Checks if the RR type is supported or not
 int is_supported_type(uint16_t type) {
-    return (type == ns_t_a || type == ns_t_aaaa || type == ns_t_ns ||
-            type == ns_t_mx || type == ns_t_soa || type == ns_t_cname ||
+    return (type == ns_t_a || 
+            type == ns_t_aaaa || 
+            type == ns_t_ns ||
+            type == ns_t_mx || 
+            type == ns_t_soa || 
+            type == ns_t_cname ||
             type == ns_t_srv);
 }
 
@@ -370,20 +374,6 @@ void parse_dns_packet(const u_char *dns_payload, int dns_payload_length, Argumen
     }
 }
 
-int dns_extract_name(const u_char *dns_payload, int dns_payload_length,
-                     const u_char *ptr, char *output, int output_size) {
-    const u_char *msg = dns_payload;                
-    const u_char *eom = dns_payload + dns_payload_length; 
-
-    int len = dn_expand(msg, eom, ptr, output, output_size);
-    if (len < 0) {
-        fprintf(stderr, "Error expanding domain name using dn_expand\n");
-        return -1;
-    }
-
-    return len;
-}
-
 void parse_resource_records(ns_msg *handle, ns_sect section, int count,
                             const char *section_name, Arguments *args) {
     // Empty RR, skip
@@ -476,7 +466,7 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
                 break;
             }
             case ns_t_ns: { // NS
-                char ns_name[256]; // 256; RFC 1035 3.3
+                char ns_name[MAX_DOMAIN_NAME_LENGTH]; // 256; RFC 1035 3.3
                 int len = dn_expand(ns_msg_base(*handle), ns_msg_end(*handle), rdata, ns_name, sizeof(ns_name));
                 if (len < 0) {
                     fprintf(stderr, "Error expanding NS RDATA\n");
@@ -497,7 +487,7 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
                 break;
             }
             case ns_t_cname: { // CNAME
-                char cname[256];
+                char cname[MAX_DOMAIN_NAME_LENGTH];
                 int len = dn_expand(ns_msg_base(*handle), ns_msg_end(*handle), rdata, cname, sizeof(cname));
                 if (len < 0) {
                     fprintf(stderr, "Error expanding CNAME RDATA\n");
@@ -526,7 +516,7 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
 
                 // First two bytes = preference
                 uint16_t preference = ns_get16(rdata);
-                char exchange[256];
+                char exchange[MAX_DOMAIN_NAME_LENGTH];
                 // The rest is the exchange domain name
                 int len = dn_expand(ns_msg_base(*handle), ns_msg_end(*handle), rdata + 2, exchange, sizeof(exchange));
                 if (len < 0) {
@@ -550,7 +540,7 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
             }
             case ns_t_soa: { // SOA
                 const u_char *soa_ptr = rdata;
-                char mname[256], rname[256];
+                char mname[MAX_DOMAIN_NAME_LENGTH], rname[MAX_DOMAIN_NAME_LENGTH];
                 
                 // Expanding NS domain name
                 int len = dn_expand(ns_msg_base(*handle), ns_msg_end(*handle), soa_ptr, mname, sizeof(mname));
@@ -611,7 +601,7 @@ void parse_resource_records(ns_msg *handle, ns_sect section, int count,
                 uint16_t priority = ns_get16(rdata);
                 uint16_t weight = ns_get16(rdata + 2);
                 uint16_t port = ns_get16(rdata + 4);
-                char target[256];
+                char target[MAX_DOMAIN_NAME_LENGTH];
                 
                 // Expand the target domain name
                 int len = dn_expand(ns_msg_base(*handle), ns_msg_end(*handle), rdata + 6, target, sizeof(target));
