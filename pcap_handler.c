@@ -1,4 +1,8 @@
-/* pcapinit.c */
+/* 
+Autor: Roman Poliačik
+login: xpolia05 
+*/
+
 #include <stdio.h>
 #include <pcap.h>
 #include <time.h>

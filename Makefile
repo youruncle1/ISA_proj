@@ -16,3 +16,6 @@ $(TARGET): $(OBJECTS)
 
 clean:
 	rm -f $(OBJECTS) $(TARGET)
+
+test: $(TARGET)
+	cd tests/dig && sudo ./test.sh

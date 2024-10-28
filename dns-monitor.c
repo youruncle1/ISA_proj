@@ -1,3 +1,8 @@
+/* 
+Autor: Roman Poliačik
+login: xpolia05 
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>

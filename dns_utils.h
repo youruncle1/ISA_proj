@@ -1,3 +1,8 @@
+/* 
+Autor: Roman Poliačik
+login: xpolia05 
+*/
+
 #ifndef DNS_UTILS_H
 #define DNS_UTILS_H
 
@@ -10,4 +15,4 @@ void close_domain_file();
 void close_translations_file();
 
 
-#endif /* DNS_UTILS_H */
+#endif
