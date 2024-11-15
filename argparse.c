@@ -35,7 +35,7 @@ int parse_arguments(int argc, char *argv[], Arguments *args) {
         switch (opt) {
             case 'h': 
                 print_usage();
-                return 0;
+                exit(EXIT_SUCCESS);
             case 'i':
                 if (p_flag) {
                     fprintf(stderr, "Error: Cannot use -i and -p together.\n");
